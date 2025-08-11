@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <signal.h>
 
+#include "broker.h"
 #include "parson.h"
 
 int parse_mqtt_configuration(const char * conf_file, mqtt_config_t *note_cfg, int i);

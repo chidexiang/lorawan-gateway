@@ -39,6 +39,9 @@ typedef struct broker_context_s
 } broker_context_t;
 #endif
 
+#include "broker.h"
+
+#if 0
 void note_connect_callback(struct mosquitto *mosq, void *obj, int rc)
 {
     broker_context_t *ctx = (broker_context_t *)obj;
@@ -134,7 +137,8 @@ void server_message_callback(struct mosquitto *mosq, void *obj, const struct mos
 
     printf("-----------------------------------------------\n");
 }
-
+#endif
+#if 0
 int gateway_mqtt_broker(mqtt_config_t *note_cfg, mqtt_config_t *server_cfg)
 {
 #if 0
@@ -197,6 +201,8 @@ int gateway_mqtt_broker(mqtt_config_t *note_cfg, mqtt_config_t *server_cfg)
     mosquitto_connect_callback_set(context.mosq_server, server_connect_callback);
     mosquitto_message_callback_set(context.mosq_server, server_message_callback);
 
+	printf("ready to connect\n");
+
     //note connect
     if (mosquitto_connect(context.mosq_note, note_cfg->host, note_cfg->port, note_cfg->keepalive) != MOSQ_ERR_SUCCESS) 
     {
@@ -219,7 +225,7 @@ int gateway_mqtt_broker(mqtt_config_t *note_cfg, mqtt_config_t *server_cfg)
 
     printf("MQTT Broker Gateway started. \n");
 
-    while (!exit_sig && !quit_sig) 
+    while ( 1 ) 
     {
         sleep(1);
     }
@@ -246,3 +252,4 @@ cleanup:
 
     return rv;
 }
+#endif

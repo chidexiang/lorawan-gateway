@@ -14,11 +14,11 @@
             "enable": true,
             "type": "SX1250",
             "single_input_mode": true,
-            "freq": 471400000,
+            "freq": 486600000,
             "rssi_offset": -207.0,
             "rssi_tcomp": {"coeff_a": 0, "coeff_b": 0, "coeff_c": 20.41, "coeff_d": 2162.56, "coeff_e": 0},
             "tx_enable": true,
-            "tx_freq_min": 500000000,
+            "tx_freq_min": 470000000,
             "tx_freq_max": 510000000,
             "tx_gain_lut":[
                 {"rf_power": -6, "pa_gain": 0, "pwr_idx":  0},
@@ -43,7 +43,7 @@
             "enable": true,
             "type": "SX1250",
             "single_input_mode": true,
-            "freq": 475000000,
+            "freq": 487400000,
             "rssi_offset": -207.0,
             "rssi_tcomp": {"coeff_a": 0, "coeff_b": 0, "coeff_c": 20.41, "coeff_d": 2162.56, "coeff_e": 0},
             "tx_enable": false
@@ -57,7 +57,7 @@
         "chan_multiSF_5": {"enable": true, "radio": 1, "if": -100000},
         "chan_multiSF_6": {"enable": true, "radio": 1, "if":  100000},
         "chan_multiSF_7": {"enable": true, "radio": 1, "if":  300000},
-        "chan_Lora_std":  {"enable": true, "radio": 1, "if": -200000, "bandwidth": 250000, "spread_factor": 7,
+        "chan_Lora_std":  {"enable": true, "radio": 0, "if": -200000, "bandwidth": 250000, "spread_factor": 7,
                            "implicit_hdr": false, "implicit_payload_length": 17, "implicit_crc_en": false, "implicit_coderate": 1},
         "chan_FSK":       {"enable": true, "radio": 1, "if":  300000, "bandwidth": 125000, "datarate": 50000}
     },
@@ -65,9 +65,9 @@
     "gateway_conf": {
         "gateway_ID": "AA555A0000000000",
         /* change with default server address/ports */
-        "server_address": "localhost",
-        "serv_port_up": 1730,
-        "serv_port_down": 1730,
+        "server_address": "115.190.143.117",
+        "serv_port_up": 1700,
+        "serv_port_down": 1700,
         /* adjust the following parameters for your network */
         "keepalive_interval": 10,
         "stat_interval": 30,
@@ -78,10 +78,11 @@
         "forward_crc_disabled": false,
         /* GPS configuration */
         "gps_tty_path": "/dev/ttyS0",
+		"gps_enable": false,
         /* GPS reference coordinates */
-        "ref_latitude": 0.0,
-        "ref_longitude": 0.0,
-        "ref_altitude": 0,
+        "ref_latitude": 31.2304,
+        "ref_longitude": 121.4737,
+        "ref_altitude": 5,
         /* Beaconing parameters */
         "beacon_period": 0,
         "beacon_freq_hz": 869525000,
@@ -97,5 +98,31 @@
             {"id": "0xCAFE2345"}
         ],
         "log_file": "loragw_hal.log"
-    }
+    },
+
+	"mqtt_conf": {
+		"mqtt": true,
+
+		"note_conf": {
+			"id": "gateway-note-client",
+			"host": "gb7b6677.ala.cn-hangzhou.emqxsl.cn",
+			"port": 8883,
+			"username": "gateway",
+			"password": "password",
+			"up_topic": "lorawan/node/up",
+			"down_topic": "lorawan/node/down",
+			"keepalive": 60
+		},
+
+		"emqx_conf": {
+			"id": "gateway-server-client",
+			"host": "gb7b6677.ala.cn-hangzhou.emqxsl.cn",
+			"port": 8883,
+			"username": "gateway",
+			"password": "password",
+			"up_topic": "lorawan/server/up",
+			"down_topic": "lorawan/server/down",
+			"keepalive": 60
+		}
+	}
 }

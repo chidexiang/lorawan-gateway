@@ -24,11 +24,12 @@
 
 #include "parse.h"
 
-int pares_mqtt_control(const char * confile)
+int pares_mqtt_control(const char * conf_file)
 {
 	const char conf_obj_name[] = "mqtt_conf";
 	JSON_Value *root_val;
 	JSON_Object *conf_obj = NULL;
+	JSON_Value *val;
 
 	root_val = json_parse_file_with_comments(conf_file);
 	if (root_val == NULL) 
@@ -123,7 +124,7 @@ int parse_mqtt_configuration(const char * conf_file, mqtt_config_t *note_cfg, in
 		val = json_object_get_value(note_conf_obj, "port");
 		if (val != NULL) {
 			note_cfg->port = (int)json_value_get_number(val);
-			printf("get port: \"%s\"\n", note_cfg.port);
+			printf("get port: \"%d\"\n", note_cfg->port);
 		}
 
 		str = json_object_get_string(note_conf_obj, "username");
@@ -140,17 +141,26 @@ int parse_mqtt_configuration(const char * conf_file, mqtt_config_t *note_cfg, in
 			printf("get password: %s\n", note_cfg->password);
 		}
 
-		str = json_object_get_string(note_conf_obj, "topic");
+		str = json_object_get_string(note_conf_obj, "up_topic");
 		if (str != NULL) {
-			strncpy(note_cfg->topic, str, sizeof note_cfg->topic);
-			note_cfg->topic[sizeof note_cfg->topic - 1] = '\0'; /*    ensure string termination */
-			printf("get topic: %s\n", note_cfg->topic);
+			strncpy(note_cfg->up_topic, str, sizeof note_cfg->up_topic);
+			note_cfg->up_topic[sizeof note_cfg->up_topic - 1] = '\0'; /*    ensure string termination */
+			printf("get up_topic: %s\n", note_cfg->up_topic);
+		}
+
+		str = json_object_get_string(note_conf_obj, "down_topic");
+		if (str != NULL) {
+			strncpy(note_cfg->down_topic, str, sizeof note_cfg->down_topic);
+			note_cfg->down_topic[sizeof note_cfg->down_topic - 1] = '\0'; /*     ensure string termination */
+			printf("get down_topic: %s\n", note_cfg->down_topic);
 		}
 		
 		val = json_object_get_value(note_conf_obj, "keepalive");
 		if (val != NULL) {         
 			note_cfg->keepalive = (int)json_value_get_number(val);
-			printf("get keepalive: \"%s\"\n", note_cfg.keepalive);
+			printf("get keepalive: \"%d\"\n", note_cfg->keepalive);
 		}
 	}
+
+	return 0;
 }

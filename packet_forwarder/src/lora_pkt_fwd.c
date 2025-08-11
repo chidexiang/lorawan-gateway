@@ -54,6 +54,8 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #include "loragw_aux.h"
 #include "loragw_reg.h"
 #include "loragw_gps.h"
+#include "broker.h"
+#include "parse.h"
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE MACROS ------------------------------------------------------- */
@@ -71,7 +73,7 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
     #define VERSION_STRING "undefined"
 #endif
 
-#define JSON_CONF_DEFAULT   "global_conf.json"
+#define JSON_CONF_DEFAULT   "global_conf.json.sx1250.CN490"
 
 #define DEFAULT_SERVER      127.0.0.1   /* hostname also supported */
 #define DEFAULT_PORT_UP     1780
@@ -299,6 +301,7 @@ void thread_jit(void);
 void thread_gps(void);
 void thread_valid(void);
 void thread_spectral_scan(void);
+void thread_mqtt(void * arg);
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DEFINITION ----------------------------------------- */
@@ -1427,6 +1430,7 @@ int main(int argc, char ** argv)
     int i; /* loop variable and temporary variable for return value */
     int x;
     int l, m;
+	int flag = 0;
 
     /* configuration file related */
     const char defaut_conf_fname[] = JSON_CONF_DEFAULT;
@@ -1439,6 +1443,7 @@ int main(int argc, char ** argv)
     pthread_t thrid_valid;
     pthread_t thrid_jit;
     pthread_t thrid_ss;
+	pthread_t thrid_mqtt;
 
     /* network socket creation */
     struct addrinfo hints;
@@ -1686,6 +1691,15 @@ int main(int argc, char ** argv)
         MSG("ERROR: [main] impossible to create JIT thread\n");
         exit(EXIT_FAILURE);
     }
+	if (pares_mqtt_control(conf_fname) == 0)
+	{
+		flag = 1;
+		i = pthread_create(&thrid_mqtt, NULL, (void * (*)(void *))thread_mqtt, (void*) conf_fname);
+		if (i != 0) {
+			MSG("ERROR: [main] impossible to create mqtt thread\n");
+			exit(EXIT_FAILURE);
+		}
+	}
 
     /* spawn thread for background spectral scan */
     if (spectral_scan_params.enable == true) {
@@ -1905,6 +1919,14 @@ int main(int argc, char ** argv)
     if (i != 0) {
         printf("ERROR: failed to join JIT thread with %d - %s\n", i, strerror(errno));
     }
+	if (flag == 1)
+	{
+		i = pthread_join(thrid_mqtt, NULL);
+		if (i != 0)
+		{
+			printf("ERROR: failed to join mqtt thread with %d - %s\n", i, strerror(errno));
+		}
+	}
     if (spectral_scan_params.enable == true) {
         i = pthread_join(thrid_ss, NULL);
         if (i != 0) {
@@ -3682,6 +3704,277 @@ void thread_spectral_scan(void) {
         }
     }
     printf("\nINFO: End of Spectral Scan thread\n");
+}
+
+void thread_mqtt(void * arg)
+{
+	char* conf_fname = (char*)arg;
+	mqtt_config_t note_cfg;
+	mqtt_config_t server_cfg;
+
+	memset(&note_cfg, 0, sizeof(note_cfg));
+	memset(&server_cfg, 0, sizeof(server_cfg));
+
+	if (parse_mqtt_configuration(conf_fname, &note_cfg, 0) != 0)
+	{
+		printf("config note_cfg failure\n");
+	}
+
+	if (parse_mqtt_configuration(conf_fname, &server_cfg, 1) != 0)
+	{
+		printf("config server_cfg failure\n");
+	}
+
+	if (gateway_mqtt_broker(&note_cfg, &server_cfg) != 0)
+	{
+		printf("running gateway mqtt broker failure\n");
+	}
+}
+
+void note_connect_callback(struct mosquitto *mosq, void *obj, int rc)
+{
+    broker_context_t *ctx = (broker_context_t *)obj;
+
+    printf("-----------------------------------------------\n");
+
+    if (rc == 0) 
+    {
+        printf("NOTE client connect success.\n");
+        
+        //subscribe when note connect success
+        if (mosquitto_subscribe(mosq, NULL, ctx->note_config->up_topic, 0) != MOSQ_ERR_SUCCESS) 
+        {
+            printf("NOTE client subscribe failure: %s\n", strerror(errno));
+        } 
+        else 
+        {
+            printf("NOTE client subscribed to topic: %s\n", ctx->note_config->up_topic);
+        }
+    } 
+    else 
+    {
+        printf("NOTE client connect failure: %s\n", mosquitto_connack_string(rc));
+    }
+
+    printf("-----------------------------------------------\n");
+}
+
+void server_connect_callback(struct mosquitto *mosq, void *obj, int rc)
+{
+    broker_context_t *ctx = (broker_context_t *)obj;
+
+    printf("-----------------------------------------------\n");
+
+    if (rc == 0) 
+    {
+        printf("SERVER client connect success.\n");
+        
+        //subscribe when server connect success
+        if (mosquitto_subscribe(mosq, NULL, ctx->server_config->down_topic, 0) != MOSQ_ERR_SUCCESS) 
+        {
+            printf("SERVER client subscribe failure: %s\n", strerror(errno));
+        }
+        else 
+        {
+            printf("SERVER client subscribed to topic: %s\n", ctx->server_config->down_topic);
+        }
+    } 
+    else 
+    {
+        printf("SERVER client connect failure: %s\n", mosquitto_connack_string(rc));
+    }
+
+    printf("-----------------------------------------------\n");
+}
+
+void note_message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message)
+{
+    broker_context_t *ctx = (broker_context_t *)obj;
+
+    printf("-----------------------------------------------\n");
+    printf("Received message from NOTE on topic '%s': %s\n", message->topic, (char *)message->payload);
+
+    //publish to server
+    if (mosquitto_publish(ctx->mosq_server, NULL, ctx->server_config->up_topic, message->payloadlen, message->payload, 0, false) != MOSQ_ERR_SUCCESS) 
+    {
+        printf("Failed to forward message to SERVER.\n");
+    } 
+    else 
+    {
+        printf("Message forwarded to SERVER on topic '%s'.\n", ctx->server_config->up_topic);
+    }
+
+    printf("-----------------------------------------------\n");
+}
+
+void server_message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message)
+{
+    broker_context_t *ctx = (broker_context_t *)obj;
+
+    printf("-----------------------------------------------\n");
+    printf("Received message from SERVER on topic '%s': %s\n", message->topic, (char *)message->payload);
+
+    // publish to note
+    if (mosquitto_publish(ctx->mosq_note, NULL, ctx->note_config->down_topic, message->payloadlen, message->payload, 0, false) != MOSQ_ERR_SUCCESS) 
+    {
+        printf("Failed to forward message to NOTE.\n");
+    } 
+    else 
+    {
+        printf("Message forwarded to NOTE on topic '%s'.\n", ctx->note_config->down_topic);
+    }
+
+    printf("-----------------------------------------------\n");
+}
+
+int gateway_mqtt_broker(mqtt_config_t *note_cfg, mqtt_config_t *server_cfg)
+{
+#if 0
+    mqtt_config_t note_cfg = {
+        .id = "gateway-note-client",
+        .host = "127.0.0.1",
+        .port = 1883,
+        .username = "note_user",
+        .password = "note_pass",
+        .topic = "lorawan/node/up",
+        .keepalive = 60
+    };
+
+    emqx_config_t server_cfg = {
+        .id = "gateway-server-client",
+        .host = "broker.emqx.io",
+        .port = 1883,
+        .topic = "lorawan/server/down",
+        .keepalive = 60
+    };
+#endif
+
+    broker_context_t context = {0};
+    context.note_config = note_cfg;
+    context.server_config = server_cfg;
+
+    int rv = 0;
+
+    mosquitto_lib_init();
+
+    //creat note client
+    context.mosq_note = mosquitto_new(note_cfg->id, true, &context);
+    if ( !context.mosq_note ) 
+    {
+        printf("mosq_note new failure: %s\n", strerror(errno));
+        rv = -1;
+        goto cleanup;
+    }
+
+    //creat server client
+    context.mosq_server = mosquitto_new(server_cfg->id, true, &context);
+    if ( !context.mosq_server ) 
+    {
+        printf("mosq_server new failure: %s\n", strerror(errno));
+        rv = -1;
+        goto cleanup;
+    }
+
+    //set note pw
+    if (mosquitto_username_pw_set(context.mosq_note, note_cfg->username, note_cfg->password) != MOSQ_ERR_SUCCESS)
+    {
+        printf("mosq_up set username and passwd failure:%s\n", strerror(errno));
+        rv = -2;
+        goto cleanup;
+    }
+
+	//set server pw
+	if (mosquitto_username_pw_set(context.mosq_server, server_cfg->username, server_cfg->password) != MOSQ_ERR_SUCCESS)
+	{    
+		printf("mosq_down set username and passwd failure:%s\n", strerror(errno));
+	    rv = -2;
+	    goto cleanup;
+	}
+
+	int tls_rc1 = mosquitto_tls_set(
+		context.mosq_note, 
+		"/home/ccy/crt/emqxsl-ca.crt",
+		NULL,
+		NULL,
+		NULL,
+		NULL
+	);
+
+	if(tls_rc1 != MOSQ_ERR_SUCCESS) {
+		fprintf(stderr, "TLS failure: %s\n", mosquitto_strerror(tls_rc1));
+		return -2;
+	}
+	
+	int tls_rc2 = mosquitto_tls_set(
+		context.mosq_server, 
+		"/home/ccy/crt/emqxsl-ca.crt",
+		NULL,
+		NULL,
+		NULL,
+		NULL
+	);
+
+	if(tls_rc2 != MOSQ_ERR_SUCCESS) {
+		fprintf(stderr, "TLS failure: %s\n", mosquitto_strerror(tls_rc2));
+		return -2;
+	}
+
+    //set callback
+    mosquitto_connect_callback_set(context.mosq_note, note_connect_callback);
+    mosquitto_message_callback_set(context.mosq_note, note_message_callback);
+    mosquitto_connect_callback_set(context.mosq_server, server_connect_callback);
+    mosquitto_message_callback_set(context.mosq_server, server_message_callback);
+
+	printf("ready to connect\n");
+
+    //note connect
+    if (mosquitto_connect(context.mosq_note, note_cfg->host, note_cfg->port, note_cfg->keepalive) != MOSQ_ERR_SUCCESS) 
+    {
+        printf("mosq_note connect failure: %s\n", strerror(errno));
+        rv = -3;
+        goto cleanup;
+    }
+
+    //server connect
+    if (mosquitto_connect(context.mosq_server, server_cfg->host, server_cfg->port, server_cfg->keepalive) != MOSQ_ERR_SUCCESS) 
+    {
+        printf("mosq_server connect failure: %s\n", strerror(errno));
+        rv = -3;
+        goto cleanup;
+    }
+
+    //loop start
+    mosquitto_loop_start(context.mosq_note);
+    mosquitto_loop_start(context.mosq_server);
+
+    printf("MQTT Broker Gateway started. \n");
+
+    while (!exit_sig && !quit_sig) 
+    {
+        sleep(1);
+    }
+
+    printf("Shutting down...\n");
+
+cleanup:
+    if (context.mosq_note) 
+    {
+        mosquitto_loop_stop(context.mosq_note, true);
+        mosquitto_disconnect(context.mosq_note);
+        mosquitto_destroy(context.mosq_note);
+    }
+    if (context.mosq_server) 
+    {
+        mosquitto_loop_stop(context.mosq_server, true);
+        mosquitto_disconnect(context.mosq_server);
+        mosquitto_destroy(context.mosq_server);
+    }
+
+    mosquitto_lib_cleanup();
+
+    printf("Cleanup finished. Exiting.\n");
+
+    return rv;
 }
 
 /* --- EOF ------------------------------------------------------------------ */

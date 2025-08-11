@@ -29,7 +29,8 @@ typedef struct mqtt_config_s
 	int         port;
 	char        username[32];
 	char        password[32];
-	char        topic[64];
+	char        up_topic[64];
+	char        down_topic[64];
 	int         keepalive;
 } mqtt_config_t;
 
