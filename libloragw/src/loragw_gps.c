@@ -55,7 +55,7 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #define TS_CPS              1E6 /* count-per-second of the timestamp counter */
 #define PLUS_10PPM          1.00001
 #define MINUS_10PPM         0.99999
-#define DEFAULT_BAUDRATE    B9600
+#define DEFAULT_BAUDRATE    B4800
 
 #define UBX_MSG_NAVTIMEGPS_LEN  16
 
@@ -545,8 +545,11 @@ enum gps_msg lgw_parse_nmea(const char *serial_buff, int buff_size) {
             gps_mod = 'N';
         }
         /* parse complete time */
-        i = sscanf(parser_buf + str_index[1], "%2hd%2hd%2hd%4f", &gps_hou, &gps_min, &gps_sec, &gps_fra);
+        i = sscanf(parser_buf + str_index[1], "%2hd%2hd%2hd.%3f", &gps_hou, &gps_min, &gps_sec, &gps_fra);
         j = sscanf(parser_buf + str_index[9], "%2hd%2hd%2hd", &gps_day, &gps_mon, &gps_yea);
+		
+		//printf("GPS time: %2hd-%2hd-%2hd-%3f-%2hd-%2hd-%2hd\n", gps_hou, gps_min, gps_sec, gps_fra, gps_day, gps_mon, gps_yea);
+
         if ((i == 4) && (j == 3)) {
             if ((gps_mod == 'A') || (gps_mod == 'D')) {
                 gps_time_ok = true;
@@ -677,17 +680,20 @@ int lgw_gps_sync(struct tref *ref, uint32_t count_us, struct timespec utc, struc
     cnt_diff = (double)(count_us - ref->count_us) / (double)(TS_CPS); /* uncorrected by xtal_err */
     utc_diff = (double)(utc.tv_sec - (ref->utc).tv_sec) + (1E-9 * (double)(utc.tv_nsec - (ref->utc).tv_nsec));
 
+	cnt_diff = 1;
+
+	//printf("cnt_diff: %f, utc_diff: %f\n", cnt_diff,utc_diff);
     /* detect aberrant points by measuring if slope limits are exceeded */
     if (utc_diff != 0) { // prevent divide by zero
         slope = cnt_diff/utc_diff;
         if ((slope > PLUS_10PPM) || (slope < MINUS_10PPM)) {
-            DEBUG_MSG("Warning: correction range exceeded\n");
+            printf("Warning: correction range exceeded\n");
             aber_n0 = true;
         } else {
             aber_n0 = false;
         }
     } else {
-        DEBUG_MSG("Warning: aberrant UTC value for synchronization\n");
+        printf("Warning: aberrant UTC value for synchronization\n");
         aber_n0 = true;
     }
 

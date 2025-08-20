@@ -77,12 +77,12 @@
         "forward_crc_error": false,
         "forward_crc_disabled": false,
         /* GPS configuration */
-        "gps_tty_path": "/dev/ttyS0",
-		"gps_enable": false,
+        "gps_tty_path": "/dev/ttyUSB0",
+		"gps_enable": true,
         /* GPS reference coordinates */
-        "ref_latitude": 31.2304,
-        "ref_longitude": 121.4737,
-        "ref_altitude": 5,
+        "ref_latitude": 0,
+        "ref_longitude": 0,
+        "ref_altitude": 0,
         /* Beaconing parameters */
         "beacon_period": 0,
         "beacon_freq_hz": 869525000,

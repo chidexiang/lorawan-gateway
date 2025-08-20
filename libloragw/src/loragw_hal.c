@@ -1555,7 +1555,7 @@ int lgw_get_trigcnt(uint32_t* trig_cnt_us) {
 
     CHECK_NULL(trig_cnt_us);
 
-    *trig_cnt_us = sx1302_timestamp_counter(true);
+    *trig_cnt_us = sx1302_timestamp_counter(false);
 
     DEBUG_PRINTF(" --- %s\n", "OUT");
 

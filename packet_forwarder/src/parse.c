@@ -98,6 +98,9 @@ int parse_mqtt_configuration(const char * conf_file, mqtt_config_t *note_cfg, in
 	} else if ( 1 == i) {
 		note_conf_obj = json_object_get_object(conf_obj, "emqx_conf");
 		printf("ready to get server config\n");
+	} else if ( 2 == i) {
+		note_conf_obj = json_object_get_object(conf_obj, "chirp_conf");
+		printf("ready to get chirp stack server config\n");
 	} else {
 		printf("input error\n");
 		return -1;

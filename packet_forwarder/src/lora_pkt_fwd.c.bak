@@ -124,16 +124,8 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #define DEFAULT_BEACON_POWER        14
 #define DEFAULT_BEACON_INFODESC     0
 
-#define MAX_FORGED_PACKETS 10
-
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE TYPES -------------------------------------------------------- */
-
-static struct lgw_pkt_rx_s forged_pkt_queue[MAX_FORGED_PACKETS];
-static int forged_pkt_q_head = 0;
-static int forged_pkt_q_tail = 0;
-static int forged_pkt_q_count = 0;
-static pthread_mutex_t mx_forge_queue = PTHREAD_MUTEX_INITIALIZER;
 
 /*  MQTT Uplink Simulation configuration */
 static bool mqtt_sub_enabled = false;
@@ -540,24 +532,13 @@ void on_message_forge_uplink(struct mosquitto *mosq, void *obj, const struct mos
     if (encrypt_and_forge_packet(plaintext_buf, plaintext_size, (uint8_t)fport, dev_addr, forged_fcnt, &forged_pkt) == 0) {
         MSG("INFO: [mqtt_sub] Packet successfully encrypted for DevAddr %s (FCnt=%u).\n", dev_addr_str, forged_fcnt);
         forged_fcnt++;
+        // 【关键修改】不再推入队列，而是直接调用UDP发送函数
+        send_forged_packet_udp(&forged_pkt);
+    } else {
+        MSG("WARNING: [mqtt_sub] Failed to encrypt and forge packet. Dropping.\n");
+    }
 
-		// 【关键修改】将伪造包放入队列，而不是直接发送
-		pthread_mutex_lock(&mx_forge_queue);
-		if (forged_pkt_q_count < MAX_FORGED_PACKETS) {
-		    forged_pkt_queue[forged_pkt_q_tail] = forged_pkt;
-		    forged_pkt_q_tail = (forged_pkt_q_tail + 1) % MAX_FORGED_PACKETS;
-		    forged_pkt_q_count++;
-		    MSG("INFO: [mqtt_sub] Forged packet enqueued for processing.\n");
-		} else {
-		    MSG("WARNING: [mqtt_sub] Forged packet queue is full. Dropping packet.\n");
-		}
-		pthread_mutex_unlock(&mx_forge_queue);
-		
-	} else {
-		MSG("WARNING: [mqtt_sub] Failed to encrypt and forge packet. Dropping.\n");
-	}
-		
-	json_value_free(root_val);
+    json_value_free(root_val);
 }
 
 void thread_mqtt_subscriber(void) {
@@ -2169,7 +2150,7 @@ int main(int argc, char ** argv)
 
 	mqtt_config_t chirp_cfg;
 	memset(&chirp_cfg, 0, sizeof(chirp_cfg));
-#if 0
+
 	if (pares_mqtt_control(conf_fname) == 0)
 	{
 		if (parse_mqtt_configuration(conf_fname, &chirp_cfg, 2) != 0)
@@ -2181,7 +2162,7 @@ int main(int argc, char ** argv)
 			mqtt_initialize(chirp_cfg.host, chirp_cfg.port, NULL, NULL, lgwm);
 		}
 	}
-#endif
+
     /* spawn threads to manage upstream and downstream */
     i = pthread_create(&thrid_up, NULL, (void * (*)(void *))thread_up, NULL);
     if (i != 0) {
@@ -2207,7 +2188,7 @@ int main(int argc, char ** argv)
 			exit(EXIT_FAILURE);
 		}
 	}
-#if 0
+
 	if (pares_mqtt_control(conf_fname) == 0)
 	{
 		flag = 1;
@@ -2217,7 +2198,7 @@ int main(int argc, char ** argv)
 			exit(EXIT_FAILURE);
 		}
 	}
-#endif
+
     /* spawn thread for background spectral scan */
     if (spectral_scan_params.enable == true) {
         i = pthread_create(&thrid_ss, NULL, (void * (*)(void *))thread_spectral_scan, NULL);
@@ -2441,7 +2422,6 @@ int main(int argc, char ** argv)
 		pthread_cancel(thrid_mqtt_sub); // This thread might be blocking in loop_forever
 		pthread_join(thrid_mqtt_sub, NULL);
 	}
-#if 0
 	if (flag == 1)
 	{
 		i = pthread_join(thrid_mqtt, NULL);
@@ -2450,7 +2430,6 @@ int main(int argc, char ** argv)
 			printf("ERROR: failed to join mqtt thread with %d - %s\n", i, strerror(errno));
 		}
 	}
-#endif
     if (spectral_scan_params.enable == true) {
         i = pthread_join(thrid_ss, NULL);
         if (i != 0) {
@@ -2491,7 +2470,7 @@ int main(int argc, char ** argv)
         }
     }
 
-	//mqtt_cleanup();
+	mqtt_cleanup();
     MSG("INFO: Exiting packet forwarder program\n");
     exit(EXIT_SUCCESS);
 }
@@ -2504,12 +2483,12 @@ void thread_up(void) {
     unsigned pkt_in_dgram; /* nb on Lora packet in the current datagram */
     char stat_timestamp[24];
     time_t t;
-#if 0
+
     /* allocate memory for packet fetching and processing */
     struct lgw_pkt_rx_s rxpkt[NB_PKT_MAX]; /* array containing inbound packets + metadata */
     struct lgw_pkt_rx_s *p; /* pointer on a RX packet */
     int nb_pkt;
-#endif
+
     /* local copy of GPS time reference */
     bool ref_ok = false; /* determine if GPS time reference must be used or not */
     struct tref local_ref; /* time reference used for UTC <-> timestamp conversion */
@@ -2540,11 +2519,6 @@ void thread_up(void) {
     uint32_t mote_addr = 0;
     uint16_t mote_fcnt = 0;
 
-	struct lgw_pkt_rx_s rxpkt[NB_PKT_MAX + MAX_FORGED_PACKETS]; 
-	struct lgw_pkt_rx_s *p;
-	int nb_pkt;
-	int nb_forged_pkt = 0;
-
     /* set upstream socket RX timeout */
     i = setsockopt(sock_up, SOL_SOCKET, SO_RCVTIMEO, (void *)&push_timeout_half, sizeof push_timeout_half);
     if (i != 0) {
@@ -2568,21 +2542,6 @@ void thread_up(void) {
             MSG("ERROR: [up] failed packet fetch, exiting\n");
             exit(EXIT_FAILURE);
         }
-
-		/*  【新增】从伪造队列中获取数据包 */
-		pthread_mutex_lock(&mx_forge_queue);
-		nb_forged_pkt = 0;
-		while (forged_pkt_q_count > 0 && (nb_pkt + nb_forged_pkt) < (NB_PKT_MAX + MAX_FORGED_PACKETS)) {
-			// 将伪造包追加到 rxpkt 数组的末尾
-			rxpkt[nb_pkt + nb_forged_pkt] = forged_pkt_queue[forged_pkt_q_head];
-			forged_pkt_q_head = (forged_pkt_q_head + 1) % MAX_FORGED_PACKETS;
-			forged_pkt_q_count--;
-			nb_forged_pkt++;
-		}
-		pthread_mutex_unlock(&mx_forge_queue);
-												
-		// 更新总包数
-		nb_pkt += nb_forged_pkt;
 
         /* check if there are status report to send */
         send_report = report_ready; /* copy the variable so it doesn't change mid-function */
