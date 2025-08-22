@@ -78,6 +78,7 @@
         "forward_crc_disabled": false,
         /* GPS configuration */
         "gps_tty_path": "/dev/ttyUSB0",
+		//"fake_gps": true,
         /* GPS reference coordinates */
         "ref_latitude": 0.0,
         "ref_longitude": 0.0,
@@ -96,7 +97,7 @@
 			"user": "gateway",
 			"password": "password",
 			"topic": "gateway/mqttpublish",
-			"appSKey": "2B7E151628AED2A6ABF7158809CF4F3C",
+			"appSKey": "3c4fcf098815f7aba6d2ae2816157e2b",
 			"nwkSKey": "00000000000000000000000000000000"
 		}
     },

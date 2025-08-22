@@ -243,6 +243,7 @@ static char * read_file(const char * filename) {
         fclose(fp);
         return NULL;
     }
+#if 0
     if (fread(file_contents, file_size, 1, fp) < 1) {
         if (ferror(fp)) {
             fclose(fp);
@@ -250,6 +251,16 @@ static char * read_file(const char * filename) {
             return NULL;
         }
     }
+#endif
+//change begin
+	size_t bytes_read = fread(file_contents, 1, file_size, fp);
+	if (bytes_read != file_size) {
+	// 不论是 ferror 还是 feof 导致的读取不完整，都视为失败
+		fclose(fp);
+		parson_free(file_contents);
+		return NULL;
+	}
+//change end
     fclose(fp);
     file_contents[file_size] = '\0';
     return file_contents;
@@ -545,6 +556,13 @@ error:
 static char * get_quoted_string(const char **string) {
     const char *string_start = *string;
     size_t string_len = 0;
+
+	/*change ADD THIS CHECK */
+	if (**string != '"') {
+		return NULL; /*  Or handle the error as appropriate */
+	}
+	//change end
+
     skip_quotes(string);
     if (**string == '\0')
         return NULL;

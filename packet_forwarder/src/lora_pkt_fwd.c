@@ -129,12 +129,6 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE TYPES -------------------------------------------------------- */
 
-static struct lgw_pkt_rx_s forged_pkt_queue[MAX_FORGED_PACKETS];
-static int forged_pkt_q_head = 0;
-static int forged_pkt_q_tail = 0;
-static int forged_pkt_q_count = 0;
-static pthread_mutex_t mx_forge_queue = PTHREAD_MUTEX_INITIALIZER;
-
 /*  MQTT Uplink Simulation configuration */
 static bool mqtt_sub_enabled = false;
 static char mqtt_sub_host[64] = "localhost";
@@ -387,6 +381,14 @@ int encrypt_and_forge_packet(const uint8_t* plaintext, int plen, uint8_t fport, 
     // FRMPayload: 加密后的数据
     LoRaMacPayloadEncrypt(plaintext, plen, forge_app_s_key, dev_addr, 0, fcnt, &phy_payload[phy_idx]);
     phy_idx += plen;
+
+	printf(">>>> DEBUG: AppSKey encrypted data (FRMPayload HEX): ");
+	int debug_i;
+	// 注意：因为上一行 phy_idx 已经被增加了 plen，所以我们需要从 (phy_idx - plen) 的位置开始打印
+	for (debug_i = 0; debug_i < plen; ++debug_i) {
+		printf("%02X", phy_payload[phy_idx - plen + debug_i]);
+	}
+	printf("\n");
     
     mac_payload_len = phy_idx;
     
@@ -395,6 +397,8 @@ int encrypt_and_forge_packet(const uint8_t* plaintext, int plen, uint8_t fport, 
     
     pthread_mutex_unlock(&mx_crypto);
     // 【关键修正】解锁完成
+
+	printf(">>>> DEBUG: Calculated MIC is: %08X\n", mic);
 
     // 3. 将 MIC 添加到载荷末尾
     phy_payload[phy_idx++] = mic & 0xFF;
@@ -423,21 +427,17 @@ int encrypt_and_forge_packet(const uint8_t* plaintext, int plen, uint8_t fport, 
     return 0;
 }
 
-// 【最终版】这个函数负责将一个伪造的数据包打包成JSON并通过UDP发送
-void send_forged_packet_udp(struct lgw_pkt_rx_s *p) {
-    // 【关键修改】不再使用栈上局部变量，而是使用全局静态缓冲区，并加锁
+// 这是一个独立的UDP发送函数，它使用系统时间，不与LoRa硬件交互。
+void send_forged_packet_udp_independent(struct lgw_pkt_rx_s *p) {
+    // 使用全局静态缓冲区和互斥锁，确保MQTT线程自身并发时不会弄乱缓冲区
+	pthread_mutex_lock(&mx_concent);
     pthread_mutex_lock(&mx_udp_send);
 
     int buff_index;
     int j;
-    
-    struct tref local_ref;
-    bool ref_ok = false;
-    pthread_mutex_lock(&mx_timeref);
-    ref_ok = gps_ref_valid;
-    local_ref = time_reference_gps;
-    pthread_mutex_unlock(&mx_timeref);
+    struct timespec current_unix_time;
 
+    // 预填充UDP包头 (12字节)
     forged_buff_up[0] = PROTOCOL_VERSION;
     forged_buff_up[1] = (uint8_t)rand();
     forged_buff_up[2] = (uint8_t)rand();
@@ -446,21 +446,28 @@ void send_forged_packet_udp(struct lgw_pkt_rx_s *p) {
     *(uint32_t *)(forged_buff_up + 8) = net_mac_l;
     buff_index = 12;
 
+    // 开始构建JSON部分
     memcpy((void *)(forged_buff_up + buff_index), (void *)"{\"rxpk\":[{", 10);
     buff_index += 10;
 
-    struct timespec current_unix_time;
+    // 【核心修改】直接获取系统时间，并计算微秒时间戳 (tmst)
+    // 不再调用任何 lgw_... 函数，也不再需要 mx_concent 锁
     clock_gettime(CLOCK_REALTIME, &current_unix_time);
-    
-    // lgw_utc2cnt 可能需要访问硬件，但我们尽量减少锁的范围
-    // 为安全起见，短暂锁定
-    pthread_mutex_lock(&mx_concent);
-    lgw_utc2cnt(local_ref, current_unix_time, &(p->count_us));
-    pthread_mutex_unlock(&mx_concent);
+    uint32_t tmst = (uint32_t)((current_unix_time.tv_sec % 86400) * 1000000 + current_unix_time.tv_nsec / 1000);
+    // 注意: 这里的 tmst 只是一个基于系统时间的模拟值，但足以让大多数服务器接受。
 
-    j = snprintf((char *)(forged_buff_up + buff_index), TX_BUFF_SIZE-buff_index, "\"tmst\":%u", p->count_us);
+    // 使用计算出的 tmst 填充JSON
+    j = snprintf((char *)(forged_buff_up + buff_index), TX_BUFF_SIZE-buff_index, "\"tmst\":%u", tmst);
     buff_index += j;
 
+    // 【可选高精度时间】填充 "time" 字段 (ISO 8601 格式)
+    char time_str[64];
+    strftime(time_str, sizeof(time_str), "%Y-%m-%dT%H:%M:%S", gmtime(&current_unix_time.tv_sec));
+    j = snprintf((char *)(forged_buff_up + buff_index), TX_BUFF_SIZE-buff_index, ",\"time\":\"%s.%06ldZ\"", time_str, current_unix_time.tv_nsec / 1000);
+    buff_index += j;
+
+
+    // --- 后续的JSON拼接逻辑与原函数保持一致 ---
     j = snprintf((char *)(forged_buff_up + buff_index), TX_BUFF_SIZE-buff_index, ",\"chan\":%u,\"rfch\":%u,\"freq\":%.6lf", p->if_chain, p->rf_chain, ((double)p->freq_hz / 1e6));
     buff_index += j;
 
@@ -497,10 +504,12 @@ void send_forged_packet_udp(struct lgw_pkt_rx_s *p) {
     buff_index += 3;
     forged_buff_up[buff_index] = 0;
 
+    // 通过上行socket直接发送UDP包
     send(sock_up, (void *)forged_buff_up, buff_index, 0);
 
-    pthread_mutex_unlock(&mx_udp_send); // 【关键修改】解锁
-    MSG("INFO: [mqtt_sub] Forged UDP packet sent to server.\n");
+    pthread_mutex_unlock(&mx_udp_send); // 解锁
+	pthread_mutex_unlock(&mx_concent);
+    MSG("INFO: [mqtt_sub] Forged UDP packet sent independently to server.\n");
 }
 
 void on_message_forge_uplink(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message) {
@@ -540,19 +549,8 @@ void on_message_forge_uplink(struct mosquitto *mosq, void *obj, const struct mos
     if (encrypt_and_forge_packet(plaintext_buf, plaintext_size, (uint8_t)fport, dev_addr, forged_fcnt, &forged_pkt) == 0) {
         MSG("INFO: [mqtt_sub] Packet successfully encrypted for DevAddr %s (FCnt=%u).\n", dev_addr_str, forged_fcnt);
         forged_fcnt++;
-
-		// 【关键修改】将伪造包放入队列，而不是直接发送
-		pthread_mutex_lock(&mx_forge_queue);
-		if (forged_pkt_q_count < MAX_FORGED_PACKETS) {
-		    forged_pkt_queue[forged_pkt_q_tail] = forged_pkt;
-		    forged_pkt_q_tail = (forged_pkt_q_tail + 1) % MAX_FORGED_PACKETS;
-		    forged_pkt_q_count++;
-		    MSG("INFO: [mqtt_sub] Forged packet enqueued for processing.\n");
-		} else {
-		    MSG("WARNING: [mqtt_sub] Forged packet queue is full. Dropping packet.\n");
-		}
-		pthread_mutex_unlock(&mx_forge_queue);
 		
+		send_forged_packet_udp_independent(&forged_pkt);
 	} else {
 		MSG("WARNING: [mqtt_sub] Failed to encrypt and forge packet. Dropping.\n");
 	}
@@ -612,7 +610,15 @@ void thread_mqtt_subscriber(void) {
         MSG("INFO: [mqtt_sub] Subscribed to topic: %s\n", mqtt_sub_topic);
     }
 
-    mosquitto_loop_forever(mosq, -1, 1);
+	while (!exit_sig && !quit_sig) {
+		rc = mosquitto_loop(mosq, -1, 1);
+		if (rc != MOSQ_ERR_SUCCESS) {
+			MSG("WARNING: [mqtt_sub] mosquitto_loop failed with error: %s. Reconnecting...\n", mosquitto_strerror(rc));
+			// A simple sleep and reconnect logic
+			sleep(5);
+			mosquitto_reconnect(mosq);
+		}
+	}
 
     MSG("INFO: [mqtt_sub] MQTT loop finished. Cleaning up.\n");
     mosquitto_destroy(mosq);
@@ -800,7 +806,7 @@ static int parse_SX130x_configuration(const char * conf_file) {
     struct lgw_conf_demod_s demodconf;
     struct lgw_conf_ftime_s tsconf;
     struct lgw_conf_sx1261_s sx1261conf;
-    uint32_t sf, bw, fdev;
+    uint32_t sf = 0, bw, fdev;
     bool sx1250_tx_lut;
     size_t size;
 
@@ -2182,8 +2188,23 @@ int main(int argc, char ** argv)
 		}
 	}
 #endif
+
+	pthread_attr_t attr_realtime;
+	struct sched_param sched_param_realtime;
+	int policy_realtime = SCHED_RR;
+
+	pthread_attr_init(&attr_realtime);
+
+	sched_param_realtime.sched_priority = 50;
+	pthread_attr_setschedpolicy(&attr_realtime, policy_realtime);
+	pthread_attr_setschedparam(&attr_realtime, &sched_param_realtime);
+
+	pthread_attr_setinheritsched(&attr_realtime, PTHREAD_EXPLICIT_SCHED);
+
+	MSG("INFO: Real-time thread attributes configured.\n");
+
     /* spawn threads to manage upstream and downstream */
-    i = pthread_create(&thrid_up, NULL, (void * (*)(void *))thread_up, NULL);
+    i = pthread_create(&thrid_up, &attr_realtime, (void * (*)(void *))thread_up, NULL);
     if (i != 0) {
         MSG("ERROR: [main] impossible to create upstream thread\n");
         exit(EXIT_FAILURE);
@@ -2193,12 +2214,11 @@ int main(int argc, char ** argv)
         MSG("ERROR: [main] impossible to create downstream thread\n");
         exit(EXIT_FAILURE);
     }
-    i = pthread_create(&thrid_jit, NULL, (void * (*)(void *))thread_jit, NULL);
+    i = pthread_create(&thrid_jit, &attr_realtime, (void * (*)(void *))thread_jit, NULL);
     if (i != 0) {
         MSG("ERROR: [main] impossible to create JIT thread\n");
         exit(EXIT_FAILURE);
     }
-
 	/*  Spawn MQTT subscriber thread if enabled */
 	if (mqtt_sub_enabled) {
 		i = pthread_create(&thrid_mqtt_sub, NULL, (void * (*)(void *))thread_mqtt_subscriber, NULL);
@@ -2207,6 +2227,9 @@ int main(int argc, char ** argv)
 			exit(EXIT_FAILURE);
 		}
 	}
+
+	pthread_attr_destroy(&attr_realtime);
+
 #if 0
 	if (pares_mqtt_control(conf_fname) == 0)
 	{
@@ -2438,7 +2461,6 @@ int main(int argc, char ** argv)
         printf("ERROR: failed to join JIT thread with %d - %s\n", i, strerror(errno));
     }
 	if (mqtt_sub_enabled) {
-		pthread_cancel(thrid_mqtt_sub); // This thread might be blocking in loop_forever
 		pthread_join(thrid_mqtt_sub, NULL);
 	}
 #if 0
@@ -2504,12 +2526,12 @@ void thread_up(void) {
     unsigned pkt_in_dgram; /* nb on Lora packet in the current datagram */
     char stat_timestamp[24];
     time_t t;
-#if 0
+
     /* allocate memory for packet fetching and processing */
     struct lgw_pkt_rx_s rxpkt[NB_PKT_MAX]; /* array containing inbound packets + metadata */
     struct lgw_pkt_rx_s *p; /* pointer on a RX packet */
     int nb_pkt;
-#endif
+
     /* local copy of GPS time reference */
     bool ref_ok = false; /* determine if GPS time reference must be used or not */
     struct tref local_ref; /* time reference used for UTC <-> timestamp conversion */
@@ -2540,11 +2562,6 @@ void thread_up(void) {
     uint32_t mote_addr = 0;
     uint16_t mote_fcnt = 0;
 
-	struct lgw_pkt_rx_s rxpkt[NB_PKT_MAX + MAX_FORGED_PACKETS]; 
-	struct lgw_pkt_rx_s *p;
-	int nb_pkt;
-	int nb_forged_pkt = 0;
-
     /* set upstream socket RX timeout */
     i = setsockopt(sock_up, SOL_SOCKET, SO_RCVTIMEO, (void *)&push_timeout_half, sizeof push_timeout_half);
     if (i != 0) {
@@ -2568,21 +2585,6 @@ void thread_up(void) {
             MSG("ERROR: [up] failed packet fetch, exiting\n");
             exit(EXIT_FAILURE);
         }
-
-		/*  【新增】从伪造队列中获取数据包 */
-		pthread_mutex_lock(&mx_forge_queue);
-		nb_forged_pkt = 0;
-		while (forged_pkt_q_count > 0 && (nb_pkt + nb_forged_pkt) < (NB_PKT_MAX + MAX_FORGED_PACKETS)) {
-			// 将伪造包追加到 rxpkt 数组的末尾
-			rxpkt[nb_pkt + nb_forged_pkt] = forged_pkt_queue[forged_pkt_q_head];
-			forged_pkt_q_head = (forged_pkt_q_head + 1) % MAX_FORGED_PACKETS;
-			forged_pkt_q_count--;
-			nb_forged_pkt++;
-		}
-		pthread_mutex_unlock(&mx_forge_queue);
-												
-		// 更新总包数
-		nb_pkt += nb_forged_pkt;
 
         /* check if there are status report to send */
         send_report = report_ready; /* copy the variable so it doesn't change mid-function */
